@@ -65,9 +65,9 @@ loop:
 				return nil, err
 			}
 		}
-    if !ci.Timestamp.After(last) {
-      p.Counters.OutOfOrder++
-    }
+		if !ci.Timestamp.After(last) {
+			p.Counters.OutOfOrder++
+		}
 		last = ci.Timestamp
 		size := len(data)
 		p.Counters.Packets++
