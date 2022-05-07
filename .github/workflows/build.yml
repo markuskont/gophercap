@@ -1,13 +1,14 @@
-name: Build Test
+name: Publish
 
 on:
   push:
-  workflow_dispatch:
+    tags:
+      - '*'
   
 jobs:
 
   build:
-    name: Build
+    name: Build binary
     runs-on: ubuntu-20.04
     steps:
 
