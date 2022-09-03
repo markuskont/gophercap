@@ -48,4 +48,22 @@ jobs:
         asset_name: gopherCap.gz
         tag: ${{ github.ref }}
         overwrite: true
-        body: ""
+        body: |
+          ## Install
+
+          Simply decompress the binary and make it executable. All documentation can be found using `--help`. 
+          * Ensure that **libpcap** is installed;
+          * Requires amd64 platform, we do not provide arm builds because we build against libpcap;
+          * Only tested on recent ubuntu / debian, binary will likely crash on rolling-release distros such as arch or fedora because build is linked to libc and libpcap;
+
+          ```
+          gunzip gopherCap.gz
+          chmod u+x gopherCap
+          ./gopherCap --help
+          ```
+
+          Full configuration dictionary can be generated with `exampleConfig` command.
+
+          ```
+          ./gopherCap --config example.yml exampleConfig
+          ```
