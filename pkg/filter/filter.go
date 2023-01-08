@@ -62,18 +62,19 @@ type Config struct {
 
 type FilterResult struct {
 	Count        int
+	Bytes        int
 	Matched      int
 	Errors       int
 	DecapErrors  int
 	Skipped      int
 	Start        time.Time
 	Took         time.Duration
-	Rate         string
 	Deduplicated int
 	DedupRatio   float64
 }
 
-func (fr FilterResult) Map() map[string]any {
+func (fr *FilterResult) Map() map[string]any {
+	fr.Took = time.Since(fr.Start)
 	return map[string]any{
 		"count":        fr.Count,
 		"matched":      fr.Matched,
@@ -82,7 +83,8 @@ func (fr FilterResult) Map() map[string]any {
 		"skipped":      fr.Skipped,
 		"start":        fr.Start,
 		"took":         fr.Took,
-		"rate":         fr.Rate,
+		"rate":         fmt.Sprintf("%.2f PPS", float64(fr.Count)/fr.Took.Seconds()),
+		"throughput":   fmt.Sprintf("%.2f MB/s", (float64(fr.Bytes)/(1024*1024))/fr.Took.Seconds()),
 		"dedup":        fr.Deduplicated,
 		"dedup_ratio":  fr.DedupRatio,
 	}
@@ -149,8 +151,6 @@ loop:
 		case <-ctx.Done():
 			return res, ErrEarlyExit{}
 		case <-report.C:
-			res.Took = time.Since(res.Start)
-			res.Rate = fmt.Sprintf("%.2f pps", float64(res.Count)/res.Took.Seconds())
 			if c.StatFunc != nil {
 				c.StatFunc(res.Map())
 			}
@@ -165,6 +165,7 @@ loop:
 			res.Errors++
 			continue loop
 		}
+		res.Bytes += len(raw)
 		pkt := gopacket.NewPacket(raw, input.LinkType(), gopacket.Default)
 		if c.Decapsulate {
 			pkt, err = DecapGREandERSPAN(pkt, c.DecapMaxDepth)
