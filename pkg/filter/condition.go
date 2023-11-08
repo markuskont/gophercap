@@ -36,6 +36,7 @@ const (
 	FilterKindPort
 	FilterKindASN
 	FilterKindRaw
+	FilterKindIP
 )
 
 func (k FilterKind) String() string {
@@ -48,6 +49,8 @@ func (k FilterKind) String() string {
 		return "asn"
 	case FilterKindRaw:
 		return "raw"
+	case FilterKindIP:
+		return "ip"
 	default:
 		return "undefined"
 	}
@@ -70,6 +73,8 @@ func NewFilterKind(raw string) FilterKind {
 		return FilterKindASN
 	case FilterKindRaw.String():
 		return FilterKindRaw
+	case FilterKindIP.String():
+		return FilterKindIP
 	default:
 		return FilterKindUndefined
 	}
@@ -192,6 +197,54 @@ func (cs ConditionSubnet) match(ip net.IP) bool {
 		if net.Contains(ip) {
 			return true
 		}
+	}
+	return false
+}
+
+func NewTupleMatcher(
+	srcIP net.IP,
+	srcPort uint16,
+	destIP net.IP,
+	destPort uint16,
+	proto string,
+) (*ConditionTuple, error) {
+	ct := &ConditionTuple{}
+	switch proto {
+	case "TCP":
+		ct.SrcPort = layers.NewTCPPortEndpoint(layers.TCPPort(srcPort))
+		ct.DestPort = layers.NewTCPPortEndpoint(layers.TCPPort(destPort))
+	case "UDP":
+		ct.SrcPort = layers.NewUDPPortEndpoint(layers.UDPPort(srcPort))
+		ct.DestPort = layers.NewUDPPortEndpoint(layers.UDPPort(destPort))
+	default:
+		return nil, fmt.Errorf("invalid proto %s", proto)
+	}
+	ct.SrcIP = srcIP
+	ct.DestIP = destIP
+	return ct, nil
+}
+
+type ConditionTuple struct {
+	SrcIP    net.IP
+	DestIP   net.IP
+	SrcPort  gopacket.Endpoint
+	DestPort gopacket.Endpoint
+}
+
+func (cs ConditionTuple) Match(pkt gopacket.Packet) bool {
+	if n := pkt.NetworkLayer(); n != nil {
+		if t := pkt.TransportLayer(); t != nil {
+			tf := t.TransportFlow()
+			if tf.Src() != cs.SrcPort || tf.Dst() != cs.DestPort {
+				return false
+			}
+		}
+		src := net.ParseIP(n.NetworkFlow().Src().String())
+		dest := net.ParseIP(n.NetworkFlow().Dst().String())
+		if src == nil || dest == nil {
+			return false
+		}
+		return cs.SrcIP.Equal(src) && cs.DestIP.Equal(dest)
 	}
 	return false
 }

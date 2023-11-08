@@ -20,17 +20,18 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/gopacket/pcapgo"
 	"github.com/sirupsen/logrus"
 )
 
-type ErrOutOfFiles struct {
-}
+type ErrOutOfFiles struct{}
 
 func (e ErrOutOfFiles) Error() string {
 	return "No more files"
@@ -67,7 +68,9 @@ func NewPcapFileList(dname string, event Event, fileFormat string) *PcapFileList
 	return pl
 }
 
-/* Suricata supports following expansion
+/*
+	Suricata supports following expansion
+
 - %n -- thread number
 - %i -- thread id
 - %t -- timestamp
@@ -187,4 +190,49 @@ func (pl *PcapFileList) buildFullPcapList() error {
 		pl.Files = append(pl.Files, path.Join(pl.DirName, file.Name()))
 	}
 	return nil
+}
+
+type pcapFile struct {
+	Path      string
+	Beginning time.Time
+}
+
+type pcapFiles []pcapFile
+
+func newPcapFiles(files []string, event Event, timeout time.Duration) (pcapFiles, error) {
+	start, err := getFirstPacketTimestamp(event.CaptureFile)
+	if err != nil {
+		return nil, err
+	}
+	tx := make(pcapFiles, 0, len(files))
+	for _, pf := range files {
+		t, err := getFirstPacketTimestamp(pf)
+		if err != nil {
+			return nil, err
+		}
+		if (t.After(start) || t.Equal(start)) && t.Before(event.Flow.Start.Add(timeout)) {
+			tx = append(tx, pcapFile{
+				Path:      pf,
+				Beginning: t,
+			})
+		}
+	}
+	return tx, nil
+}
+
+func getFirstPacketTimestamp(fName string) (time.Time, error) {
+	f, err := os.Open(fName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	reader, err := pcapgo.NewReader(f)
+	if err != nil {
+		return time.Time{}, err
+	}
+	_, ci, err := reader.ReadPacketData()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return ci.Timestamp, nil
 }
