@@ -113,6 +113,8 @@ func filterTunnel(data []byte, eventFLowPair FlowPair, event Event) bool {
 				if event.Tunnel.Depth > 0 {
 					var tLayer gopacket.Layer
 					switch event.Tunnel.Proto {
+					case "ERSPAN":
+						tLayer = packet.Layer(layers.LayerTypeERSPANII)
 					case "GRE":
 						tLayer = packet.Layer(layers.LayerTypeGRE)
 					case "VXLAN":
