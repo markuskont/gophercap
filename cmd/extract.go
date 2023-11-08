@@ -35,15 +35,14 @@ gopherCap extract \
 	--dir-pcap /var/log/suricata \
 	--event /tmp/event.json \
 	--dump-pcap /tmp/event.pcap \
-	--file-format log-%n-%t.pcap \
-	--skip-bpf
+	--file-format log-%n-%t.pcap
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		extractConfig := &extract.ExtractPcapConfig{
 			OutputName: viper.GetString("extract.dump.pcap"),
 			EventPath:  viper.GetString("extract.event"),
-			SkipBpf:    viper.GetBool("extract.skip.bpf"),
 			FileFormat: viper.GetString("extract.file.format"),
+			Decap:      true,
 		}
 		if err := extract.ExtractPcapFile(*extractConfig); err != nil {
 			logrus.Fatal(err)
@@ -60,10 +59,10 @@ func init() {
 	extractCmd.PersistentFlags().String("dump-pcap", "",
 		`Pcap file to extract data to.`)
 	viper.BindPFlag("extract.dump.pcap", extractCmd.PersistentFlags().Lookup("dump-pcap"))
-	extractCmd.PersistentFlags().Bool("skip-bpf", false,
-		`Explicitely extract data with gopacket parsing. Slower but more accurate.`)
-	viper.BindPFlag("extract.skip.bpf", extractCmd.PersistentFlags().Lookup("skip-bpf"))
 	extractCmd.PersistentFlags().String("file-format", "pcap.%n.%t",
 		`How pcap files are named by Suricata.`)
 	viper.BindPFlag("extract.file.format", extractCmd.PersistentFlags().Lookup("file-format"))
+	extractCmd.PersistentFlags().Bool("skip-bpf", false,
+		`Explicitely extract data with gopacket parsing. Slower but more accurate.`)
+	viper.BindPFlag("extract.skip.bpf", extractCmd.PersistentFlags().Lookup("skip-bpf"))
 }

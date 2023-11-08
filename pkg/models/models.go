@@ -18,6 +18,7 @@ package models
 
 import (
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -64,4 +65,28 @@ type Alert struct {
 	Signature   string `json:"signature,omitempty"`
 	SignatureID int    `json:"signature_id,omitempty"`
 	Category    string `json:"category,omitempty"`
+}
+
+// TimeStamp is a wrapper around time.Time object to unmarshal RFC3339 timestamp the way
+// Suricata creates it. Go time package defines RFC3339, but expects a plus or colon in timezone
+// Thus, defining Timestamp as naive time.Time fails with parse error, as template is wrong
+type TimeStamp struct{ time.Time }
+
+// UnmarshalJSON implements json.Unmarshaler
+func (t *TimeStamp) UnmarshalJSON(b []byte) error {
+	raw, err := strconv.Unquote(string(b))
+	if err != nil {
+		return err
+	}
+	ts, err := time.Parse("2006-01-02T15:04:05.999999Z0700", raw)
+	if err != nil {
+		return err
+	}
+	t.Time = ts
+	return nil
+}
+
+// MarshalJSON ensures that timestamps are re-encoded the way Suricata made them
+func (t *TimeStamp) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + t.Time.Format("2006-01-02T15:04:05.000000-0700") + `"`), nil
 }

@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package extract
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,23 +28,13 @@ import (
 	"strconv"
 	"time"
 
-	"encoding/json"
-
+	"github.com/StamusNetworks/gophercap/pkg/filter"
+	"github.com/StamusNetworks/gophercap/pkg/models"
+	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/pcapgo"
 	"github.com/sirupsen/logrus"
 )
-
-const FlowTimeout time.Duration = 600 * 1000000000
-
-func writePacket(handle *pcap.Handle, buf []byte) error {
-	if err := handle.WritePacketData(buf); err != nil {
-		logrus.Warningf("Failed to write packet: %s\n", err)
-		return err
-	}
-	return nil
-}
 
 // IPAddr is for decoding IP values directly to IP objects during JSON decode. net.IP is a wrapper
 // around byte array, not integer, so it also handles IPv6 addresses.
@@ -73,7 +64,7 @@ type Tunnel struct {
 }
 
 type Event struct {
-	Timestamp   string
+	Timestamp   string `json:"timestamp"`
 	CaptureFile string `json:"capture_file"`
 	SrcIP       IPAddr `json:"src_ip"`
 	DestIP      IPAddr `json:"dest_ip"`
@@ -82,24 +73,10 @@ type Event struct {
 	AppProto    string `json:"app_proto"`
 	Proto       string `json:"proto"`
 	Tunnel      Tunnel `json:"tunnel"`
-}
 
-func openPcapReaderHandle(fName string, bpfFilter string) (*pcap.Handle, error) {
-	// Open PCAP file + handle potential BPF Filter
-	// TODO maybe use a pcapgo reader
-	handleRead, err := pcap.OpenOffline(fName)
-	if err != nil {
-		return handleRead, err
-	}
-
-	if err == nil {
-		err = handleRead.SetBPFFilter(bpfFilter)
-		if err != nil {
-			logrus.Errorf("Invalid BPF Filter: %s", err)
-			return handleRead, err
-		}
-	}
-	return handleRead, nil
+	Flow struct {
+		Start models.TimeStamp `json:"start"`
+	} `json:"flow"`
 }
 
 type ExtractPcapConfig struct {
@@ -107,6 +84,7 @@ type ExtractPcapConfig struct {
 	EventPath  string
 	FileFormat string
 	SkipBpf    bool
+	Decap      bool
 }
 
 /*
@@ -126,9 +104,8 @@ func ExtractPcapFile(config ExtractPcapConfig) error {
 	}
 
 	var event Event
-	err = json.Unmarshal(eventPathstring, &event)
-	if err != nil {
-		return errors.New("Can't parse JSON in " + config.EventPath)
+	if err = json.Unmarshal(eventPathstring, &event); err != nil {
+		return err
 	}
 	pcapDir := filepath.Dir(event.CaptureFile)
 
@@ -144,7 +121,14 @@ func ExtractPcapFile(config ExtractPcapConfig) error {
 		logrus.Debugf("Tunnel: %s <-%s-> %s\n", event.Tunnel.SrcIP, event.Tunnel.Proto, event.Tunnel.DestIP)
 	}
 	logrus.Debugf("Flow: %s <-%s:%s-> %s\n", event.SrcIP, event.Proto, event.AppProto, event.DestIP)
-	eventFlowPair, err := buildEndpoints(event)
+
+	m, err := filter.NewTupleMatcher(
+		event.SrcIP.IP,
+		event.SrcPort,
+		event.DestIP.IP,
+		event.DestPort,
+		event.Proto,
+	)
 	if err != nil {
 		return err
 	}
@@ -152,14 +136,6 @@ func ExtractPcapFile(config ExtractPcapConfig) error {
 	pcapFileList := NewPcapFileList(pcapDir, event, config.FileFormat)
 	if pcapFileList == nil {
 		return errors.New("Problem when building pcap file list")
-	}
-
-	bpfFilter := ""
-	if config.SkipBpf != true {
-		bpfFilter, err = buildBPF(event)
-		if err != nil {
-			logrus.Warning(err)
-		}
 	}
 
 	// Open up a second pcap handle for packet writes.
@@ -171,84 +147,100 @@ func ExtractPcapFile(config ExtractPcapConfig) error {
 	defer outfile.Close()
 
 	handleWrite := pcapgo.NewWriter(outfile)
-	handleWrite.WriteFileHeader(65536, layers.LinkTypeEthernet) // new file, must do this.
+	err = handleWrite.WriteFileHeader(65536, layers.LinkTypeEthernet) // new file, must do this.
 	if err != nil {
 		logrus.Error("Can't write to output file: ", err)
 		return err
 	}
 
 	start := time.Now()
-	var pktCount uint64 = 0
-	/* FIXME we can do better here */
-	var lastTimestamp time.Time = time.Now()
-	var firstTimestamp time.Time = time.Now()
-
-	fName, err := pcapFileList.GetNext()
-	if err != nil {
-		switch err.(type) {
-		case ErrOutOfFiles, *ErrOutOfFiles:
-			logrus.Debugf("Expected at least one file: %s\n", err)
-			return nil
-		default:
-			return err
-		}
-	}
+	var pktCount int
 	/*
 		Loop over pcap file starting with the one specified in the event
 		If timestamp of first packet > lastTimestamp of flow + flow_timeout then
 		we can consider we are at the last pcap
 	*/
-	for len(event.CaptureFile) == 0 || firstTimestamp.Before(lastTimestamp.Add(FlowTimeout)) {
-		filePkt := 0
-		logrus.Debugf("Reading packets from %s", fName)
-		handleRead, err := openPcapReaderHandle(fName, bpfFilter)
-		defer handleRead.Close()
-		if err != nil {
-			logrus.Warningln("This was fast")
-			break
-		}
 
-		// Loop over packets and write them
-		for {
-			data, ci, err := handleRead.ReadPacketData()
+	// build a list of candidate pcap files
+	files, err := newPcapFiles(pcapFileList.Files, event, 600*time.Second)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return errors.New("no files match the timeframe")
+	}
 
-			switch {
-			case err == io.EOF:
-				logrus.Debugf("Extracted %d packet(s) from pcap file %s", filePkt, fName)
-				goto NextFile
-			case err != nil:
-				logrus.Warningf("Failed to read packet %d: %s\n", pktCount, err)
-			default:
-				if config.SkipBpf == true || event.Tunnel.Depth > 0 {
-					if filterTunnel(data, *eventFlowPair, event) {
-						handleWrite.WritePacket(ci, data)
-						pktCount++
-						lastTimestamp = ci.Timestamp
-					}
-				} else {
-					handleWrite.WritePacket(ci, data)
-					pktCount++
-					filePkt++
-				}
-			}
-		}
-	NextFile:
-		/* Open new pcap to see the beginning */
-		fName, err = pcapFileList.GetNext()
+	logrus.
+		WithField("start", event.Flow.Start).
+		Infof("building candidate fileset beginning from")
+
+	for _, pf := range files {
+		logrus.Debugf("Reading packets from %s", pf.Path)
+		count, err := processFile(pf, config, m, handleWrite)
 		if err != nil {
-			logrus.Debugln(err)
-			break
+			return err
 		}
-		handleTest, err := openPcapReaderHandle(fName, bpfFilter)
-		if err != nil {
-			break
-		}
-		_, ci, err := handleRead.ReadPacketData()
-		firstTimestamp = ci.Timestamp
-		handleTest.Close()
+		pktCount += count
 	}
 	logrus.Infof("Finished in %s\n", time.Since(start))
 	logrus.Infof("Written %d packet(s)\n", pktCount)
 
 	return nil
+}
+
+func processFile(
+	pf pcapFile,
+	config ExtractPcapConfig,
+	m filter.Matcher,
+	handleWrite *pcapgo.Writer,
+) (int, error) {
+	f, err := os.Open(pf.Path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	reader, err := pcapgo.NewReader(f)
+	if err != nil {
+		return 0, err
+	}
+
+	tick := time.NewTicker(1 * time.Second)
+	defer tick.Stop()
+	var count, matched int
+
+	// Loop over packets and write them
+loop:
+	for {
+		count++
+		data, ci, err := reader.ReadPacketData()
+		if err != nil && err == io.EOF {
+			return matched, nil
+		} else if err != nil && errors.Is(err, io.ErrUnexpectedEOF) {
+			logrus.Warn("capture file is still being written to")
+			return matched, nil
+		} else if err != nil {
+			return matched, err
+		}
+		pkt := gopacket.NewPacket(data, reader.LinkType(), gopacket.Lazy)
+		if config.Decap {
+			if config.Decap {
+				decapped, err := filter.DecapGREandERSPAN(pkt, 10)
+				if err != nil {
+					return matched, err
+				}
+				pkt = decapped
+			}
+		}
+		if !m.Match(pkt) {
+			continue loop
+		}
+		matched++
+		data = pkt.Data()
+
+		ci.CaptureLength = len(data)
+		if err := handleWrite.WritePacket(ci, data); err != nil {
+			return matched, err
+		}
+	}
 }
