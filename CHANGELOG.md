@@ -1,3 +1,9 @@
+# 0.3.3
+
+## Release highlights
+
+* fix replay mapper error when packet size is larger than SnapLen
+
 # 0.3.2
 
 ## Release highlights
