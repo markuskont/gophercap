@@ -32,7 +32,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var DelayGrace = 100 * time.Microsecond
+var DelayGrace = 100 * time.Nanosecond
 
 /*
 Config is used for passing Handle configurations when creating a new replay object
@@ -173,6 +173,7 @@ func (h *Handle) Play() error {
 			if err != nil {
 				return err
 			}
+			reader.SetSnaplen(65 * 1024)
 
 			actualGlobalDuration := h.FileSet.Duration()
 			actualLocalDuration := vals.Duration()
@@ -317,8 +318,9 @@ loop:
 				continue loop
 			}
 		}
-		delay := ci.Timestamp.Sub(last) / time.Duration(h.speedMod)
+		delay := ci.Timestamp.Sub(last)
 		if delay > DelayGrace && !ci.Timestamp.Before(last) {
+			delay = delay / time.Duration(h.speedMod)
 			time.Sleep(delay)
 		}
 		packets <- data
@@ -353,7 +355,7 @@ loop:
 		})
 
 		if res.count%100 == 0 {
-			last = sendPackets(b, packets, int64(h.speedMod), h.scale, last)
+			last = sendPackets(b, packets, int64(h.speedMod), last)
 			b = make(pBuf, 0, 100)
 		}
 		res.count++
@@ -372,7 +374,6 @@ func sendPackets(
 	b pBuf,
 	tx chan<- []byte,
 	mod int64,
-	scale bool,
 	prevLast time.Time,
 ) (last time.Time) {
 	sort.Slice(b, func(i, j int) bool {
@@ -381,8 +382,9 @@ func sendPackets(
 
 	last = prevLast
 	for _, pkt := range b {
-		delay := pkt.Timestamp.Sub(last) / time.Duration(mod)
-		if delay > DelayGrace {
+		delay := pkt.Timestamp.Sub(last)
+		if delay > DelayGrace && !pkt.Timestamp.Before(last) {
+			delay = delay / time.Duration(mod)
 			time.Sleep(delay)
 		}
 		tx <- pkt.Payload
