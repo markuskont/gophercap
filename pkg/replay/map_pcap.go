@@ -16,7 +16,8 @@ import (
 type Pcap struct {
 	Path string `json:"path"`
 
-	Snaplen uint32 `json:"snaplen"`
+	Snaplen  int `json:"snaplen"`
+	Oversize int `json:"oversize"`
 
 	models.Counters
 	models.Period
@@ -32,12 +33,13 @@ func scan(path string, ctx context.Context) (*Pcap, error) {
 		return nil, err
 	}
 	defer r.Close()
-	p := &Pcap{
-		Path: path,
-	}
 	h, err := pcapgo.NewReader(r)
 	if err != nil {
 		return nil, err
+	}
+	p := &Pcap{
+		Path:    path,
+		Snaplen: int(h.Snaplen()),
 	}
 	// Get first packet
 	data, ci, err := h.ReadPacketData()
@@ -47,11 +49,18 @@ func scan(path string, ctx context.Context) (*Pcap, error) {
 	p.Period.Beginning = ci.Timestamp
 	p.Counters.Size = len(data)
 
+	// gopacket reader will fail whenever we have packets larger than SnapLen
+	// this is not desired, so we override it and just track number of oversize packets
+	h.SetSnaplen(64 * 1024)
+
 	var last time.Time
 
 loop:
 	for {
 		data, ci, err = h.ReadPacketData()
+		if len(data) > p.Snaplen {
+			p.Oversize++
+		}
 
 		if err != nil {
 			if err == io.EOF {
@@ -72,7 +81,6 @@ loop:
 		}
 	}
 	p.Period.End = last
-	p.Snaplen = h.Snaplen()
 	p.Rates.Duration = p.Period.Duration()
 	p.Rates.DurationHuman = p.Rates.Duration.String()
 	p.Rates.PPS = p.Counters.PPS(p.Rates.Duration)
