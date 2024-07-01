@@ -57,6 +57,11 @@ func scan(path string, ctx context.Context) (*Pcap, error) {
 
 loop:
 	for {
+		select {
+		case <-ctx.Done():
+			break loop
+		default:
+		}
 		data, ci, err = h.ReadPacketData()
 		if len(data) > p.Snaplen {
 			p.Oversize++
