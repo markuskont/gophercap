@@ -54,6 +54,7 @@ func buildBPF(event Event) (string, error) {
 		bpfFilter += " or "
 		bpfFilter += fmt.Sprintf("(src host %s and src port %d and dst host %s and dst port %d)", destIp, destPort, srcIp, srcPort)
 		bpfFilter += ")"
+		bpfFilter = fmt.Sprintf("(vlan and %s) or (%s)", bpfFilter, bpfFilter)
 	case "GRE":
 		bpfFilter += "("
 		if event.Tunnel.Depth != 0 {
